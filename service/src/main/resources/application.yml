@@ -1,0 +1,6 @@
+server:
+  port: ${PORT:8080}
+coldstart:
+  collection: invocations
+  # set to false for local runs without Firestore credentials
+  firestore-enabled: ${FIRESTORE_ENABLED:true}
