@@ -1,0 +1,13 @@
+{
+  "strategy": "fixed",
+  "measured_cycles": 6,
+  "spike_requests": 168,
+  "errors": 0,
+  "cold_starts": 0,
+  "cold_rate_pct": 0.0,
+  "avg_ms": 846.5,
+  "p95_ms": 3000.6,
+  "warm_pings": 36,
+  "new_containers_from_pings": 15,
+  "warm_cost_usd": 0.000275
+}
