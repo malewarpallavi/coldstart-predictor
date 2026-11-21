@@ -31,3 +31,19 @@ build/
 
 ### VS Code ###
 .vscode/
+.aws-sam/
+__pycache__/
+.venv/
+.env
+*.pem
+*.key
+*.log
+notebooks/.ipynb_checkpoints/
+.aws-sam/
+__pycache__/
+.venv/
+.env
+*.pem
+*.key
+*.log
+notebooks/.ipynb_checkpoints/
