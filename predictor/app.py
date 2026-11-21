@@ -14,7 +14,7 @@ TARGET_FN = os.environ["TARGET_FN"]            # also the DynamoDB partition key
 ALIAS = os.environ.get("ALIAS", "live")
 WARM_THRESHOLD = float(os.environ.get("WARM_THRESHOLD", "12"))   # forecast req/min that triggers warming
 PER_CONTAINER = float(os.environ.get("PER_CONTAINER", "6"))      # req/min one warm container "covers"
-MAX_WARM = int(os.environ.get("MAX_WARM", "5"))                  # stay well under the account limit
+MAX_WARM = int(os.environ.get("MAX_WARM", "4"))                  # stay well under the account limit
 HOLD_MS = int(os.environ.get("HOLD_MS", "1500"))                 # keep each ping in flight so pings land on distinct containers
 
 _table = boto3.resource("dynamodb").Table(TABLE)
@@ -36,6 +36,7 @@ def features(counts, m):
     """Must match the training features in notebooks/forecast_experiment.py."""
     f = {f"lag{k}": counts[-k] for k in (1, 2, 3, 5, 10, 15)}
     f["roll5"] = sum(counts[-5:]) / 5
+    f["max15"] = max(counts[-15:])
     f["diff1"] = counts[-1] - counts[-2]
     f["min_of_period"] = m % 5
     return [f[name] for name in MODEL["features"]]
@@ -88,7 +89,7 @@ def handler(event, context):
 
     if cfg["strategy"] == "predictive":
         counts = history(m)
-        forecast = predict(features(counts, m))
+        forecast = max(0.0, predict(features(counts, m)))
         out["forecast"] = round(forecast, 2)
         if forecast >= WARM_THRESHOLD:
             out["warm"] = max(1, min(MAX_WARM, math.ceil(forecast / PER_CONTAINER)))

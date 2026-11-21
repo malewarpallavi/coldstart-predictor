@@ -20,7 +20,13 @@ DAYS = 14
 n = DAYS * 24 * 60
 t = np.arange(n)
 traffic = 3.5 + 1.0 * np.sin(2 * np.pi * (t % 1440) / 1440)       # light background
-traffic[t % PERIOD == 0] += SPIKE_ADD                              # scheduled spikes
+active = np.zeros(n, dtype=bool)                                   # the schedule switches on/off in blocks,
+pos, on = 0, True                                                  # so the model must check recent traffic
+while pos < n:
+    length = int(rng.integers(40, 150))
+    active[pos:pos + length] = on
+    pos, on = pos + length, not on
+traffic[(t % PERIOD == 0) & active] += SPIKE_ADD                   # scheduled spikes (only while active)
 for _ in range(DAYS * 3):                                          # random, unpredictable bursts
     s = rng.integers(0, n - 6)
     traffic[s:s + rng.integers(2, 5)] += rng.integers(15, 30)
@@ -31,6 +37,7 @@ df = pd.DataFrame({"y": y})
 for lag in (1, 2, 3, 5, 10, 15):
     df[f"lag{lag}"] = df["y"].shift(lag - 1)                       # lag1 = current minute
 df["roll5"] = df["y"].rolling(5).mean()
+df["max15"] = df["y"].rolling(15).max()                            # was there a spike recently?
 df["diff1"] = df["y"] - df["y"].shift(1)
 df["min_of_period"] = t % PERIOD
 df["target"] = df["y"].shift(-H)
