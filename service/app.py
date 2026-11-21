@@ -18,6 +18,12 @@ def handler(event, context):
     start = time.perf_counter()
     cold, _is_cold = _is_cold, False
 
+    # Warm-up ping from the predictor: hold the container busy so parallel pings
+    # land on distinct containers, and do NOT count it as user traffic.
+    if isinstance(event, dict) and event.get("warm"):
+        time.sleep(int(event.get("hold_ms", 1500)) / 1000)
+        return {"warmed": True, "cold": cold, "container": _container_id}
+
     # simulated work
     work_ms = int((event.get("queryStringParameters") or {}).get("ms", 20))
     end = start + work_ms / 1000

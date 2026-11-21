@@ -35,8 +35,41 @@ Resources:
       FunctionUrlConfig:
         AuthType: NONE
 
+  PredictorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: predictor/
+      Handler: app.handler
+      Runtime: python3.12
+      MemorySize: 256
+      Timeout: 30
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref InvocationsTable
+          TARGET_FN: !Ref TargetFunction
+          ALIAS: live
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref InvocationsTable
+        - Statement:
+            - Effect: Allow
+              Action: lambda:InvokeFunction
+              Resource:
+                - !GetAtt TargetFunction.Arn
+                - !Sub "${TargetFunction.Arn}:*"
+      Events:
+        EveryMinute:
+          Type: Schedule
+          Properties:
+            Schedule: rate(1 minute)
+            Enabled: true
+
 Outputs:
   FunctionUrl:
     Value: !GetAtt TargetFunctionUrl.FunctionUrl
   TableName:
     Value: !Ref InvocationsTable
+  TargetFunctionName:
+    Value: !Ref TargetFunction
+  PredictorFunctionName:
+    Value: !Ref PredictorFunction
