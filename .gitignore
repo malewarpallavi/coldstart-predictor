@@ -47,3 +47,5 @@ __pycache__/
 *.key
 *.log
 notebooks/.ipynb_checkpoints/
+loadtest/*.csv
+loadtest/*.csv
