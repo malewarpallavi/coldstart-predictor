@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Adaptive Cold-Start Predictor for AWS Lambda</title>
+<style>
+:root{--bg:#ffffff;--fg:#1b1d21;--muted:#6b7280;--bar:#b8bfcb;--card:#f4f6f9;--line:#dde1e7;--accent:#2f6fdb;--spike:#c9453f;--warm:#23864f;--fc:#d98200}
+@media (prefers-color-scheme: dark){:root{--bg:#14161a;--fg:#e9eaec;--muted:#9aa1ab;--bar:#4a5260;--card:#1d2026;--line:#2d323b;--accent:#78a8ff;--spike:#ff7f76;--warm:#4fd37f;--fc:#f2b53a}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.55 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+main{max-width:980px;margin:0 auto;padding:28px 18px 60px}
+h1{font-size:1.7rem;margin:0 0 6px}
+h2{font-size:1.2rem;margin:38px 0 10px}
+p{margin:8px 0}.muted{color:var(--muted)}
+a{color:var(--accent)}
+.row{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:12px 0}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 14px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin:12px 0}
+.stat .v{font-size:1.5rem;font-weight:650}.stat .l{font-size:.82rem;color:var(--muted)}
+button,select{font:inherit;border:1px solid var(--line);background:var(--card);color:var(--fg);border-radius:8px;padding:7px 12px;cursor:pointer}
+button.on{background:var(--accent);border-color:var(--accent);color:#fff}
+button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+canvas{width:100%;height:290px;display:block;background:var(--card);border:1px solid var(--line);border-radius:10px}
+table{border-collapse:collapse;width:100%;font-size:.93rem}
+th,td{border-bottom:1px solid var(--line);padding:7px 8px;text-align:right}
+th:first-child,td:first-child{text-align:left}
+.wrap{overflow-x:auto}
+.steps{counter-reset:s;list-style:none;padding:0;margin:10px 0}
+.steps li{counter-increment:s;margin:8px 0;padding-left:34px;position:relative}
+.steps li::before{content:counter(s);position:absolute;left:0;top:1px;width:24px;height:24px;border-radius:50%;background:var(--accent);color:#fff;text-align:center;font-size:.85rem;line-height:24px}
+.legend span{display:inline-block;margin-right:14px;font-size:.85rem;color:var(--muted)}
+.dot{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px;vertical-align:-1px}
+.bars{display:grid;grid-template-columns:90px repeat(6,1fr);gap:6px;align-items:end;margin-top:8px}
+.bars .name{font-size:.85rem;color:var(--muted)}
+.bars .b{background:var(--spike);border-radius:4px 4px 0 0;min-height:2px;text-align:center;font-size:.78rem;color:#fff}
+.bars .zero{background:var(--warm);min-height:2px}
+.status{min-height:2.6em}
+.tag{font-size:.75rem;border:1px solid var(--line);border-radius:999px;padding:1px 8px;color:var(--muted)}
+</style>
+</head>
+<body>
+<main>
+<h1>Adaptive Cold-Start Predictor for AWS Lambda</h1>
+<p class="muted">Forecast load from per-minute invocation history, then pre-warm Lambda containers only when a spike is expected.
+<a href="https://github.com/malewarpallavi/coldstart-predictor">Source code and README on GitHub</a></p>
+
+<h2>How it works</h2>
+<ol class="steps">
+<li><b>Count.</b> The target Lambda writes an atomic per-minute counter to DynamoDB and records whether each request was a cold start.</li>
+<li><b>Forecast.</b> Every minute, EventBridge triggers the predictor Lambda. It reads the last 15 minutes and evaluates a gradient-boosting model (150 trees, exported to JSON) to forecast requests two minutes ahead.</li>
+<li><b>Pre-warm.</b> If the forecast crosses a threshold, the predictor sends parallel warm-up pings, which makes Lambda create that many containers before the spike arrives.</li>
+<li><b>Measure.</b> A benchmark compares three strategies: no warming, fixed-interval warming, and predictive warming.</li>
+</ol>
+
+<h2>Live simulator</h2>
+<p>This page runs the <b>real exported model</b> in your browser against the same workload as the AWS benchmark: 3 background requests per minute, plus a 28-request spike (4 concurrent) every 5 minutes. It is a simulation of container state, not a live AWS call.</p>
+<div class="row" id="strategies" role="group" aria-label="Strategy">
+<button data-s="off">No warming</button><button data-s="fixed">Fixed interval</button><button data-s="predictive" class="on">Predictive</button>
+<select id="mode" aria-label="Traffic pattern">
+<option value="scheduled">Traffic: spike every 5 min</option>
+<option value="background">Traffic: background only</option>
+<option value="idle">Traffic: idle (no requests)</option>
+</select>
+</div>
+<div class="row">
+<button id="play">Play</button><button id="step">Step 1 minute</button><button id="reset">Reset</button>
+<button id="burst" title="Add 28 requests at a minute the model does not expect">Inject unscheduled burst</button>
+<label class="muted">Speed <select id="speed"><option value="1100">Slow</option><option value="600" selected>Normal</option><option value="200">Fast</option></select></label>
+</div>
+<canvas id="chart" aria-label="Requests per minute, forecast and warm-up decisions"></canvas>
+<p class="legend"><span><i class="dot" style="background:var(--bar)"></i>requests per minute</span><span><i class="dot" style="background:var(--spike)"></i>spike minute</span><span><i class="dot" style="background:var(--fc)"></i>forecast (made 2 min ahead)</span><span><i class="dot" style="background:var(--warm)"></i>warm-up pings sent</span></p>
+<p class="status" id="status" aria-live="polite"></p>
+<div class="grid">
+<div class="card stat"><div class="v" id="sCold">0</div><div class="l">cold starts in spikes</div></div>
+<div class="card stat"><div class="v" id="sReq">0</div><div class="l">spike requests</div></div>
+<div class="card stat"><div class="v" id="sPings">0</div><div class="l">warm-up pings</div></div>
+<div class="card stat"><div class="v" id="sCost">$0</div><div class="l">estimated ping cost</div></div>
+</div>
+
+<h2>Simulator vs. the real AWS benchmark</h2>
+<p>The simulator runs 1 warm-up cycle plus 6 measured cycles, like the benchmark. Real numbers come from <code>loadtest/benchmark.py</code> run against the deployed stack. The one-request gap for no warming is a cycle in which 13 client requests failed on the network before reaching the function.</p>
+<div class="wrap"><table id="cmp"><thead><tr><th>Strategy</th><th>Cold starts (sim)</th><th>Cold starts (AWS)</th><th>Pings (sim)</th><th>Pings (AWS)</th></tr></thead><tbody></tbody></table></div>
+
+<h2>Real AWS benchmark results</h2>
+<p>6 measured cycles per strategy, 168 spike requests each, Lambda in Mumbai (ap-south-1).</p>
+<div class="wrap"><table>
+<thead><tr><th>Strategy</th><th>Cold starts</th><th>Cold rate</th><th>Warm pings</th><th>Ping cost (est.)</th><th>Median ms</th><th>p95 ms</th></tr></thead>
+<tbody>
+<tr><td>No warming</td><td>17</td><td>10.1%</td><td>0</td><td>$0</td><td>320</td><td>10139</td></tr>
+<tr><td>Fixed interval</td><td>0</td><td>0%</td><td>36</td><td>$0.000275</td><td>437</td><td>3001</td></tr>
+<tr><td>Predictive</td><td>0</td><td>0%</td><td>24</td><td>$0.000210</td><td>333</td><td>1114</td></tr>
+</tbody></table></div>
+<p><b>Cold starts per measured cycle</b> <span class="tag">of 28 spike requests</span></p>
+<div id="cycleBars"></div>
+<p class="muted">Latency columns are client-side, measured from a home network in a different city, so differences between the two warmed strategies are mostly network noise. The cold-start counts are reported by the function itself and are reliable.</p>
+
+<h2>What this does and does not show</h2>
+<ul>
+<li>Both warming strategies removed cold starts in this workload; predictive warming used 33% fewer pings than fixed-interval warming.</li>
+<li>The model was trained on simulated, periodic traffic, so it largely learns the schedule. Try <b>Inject unscheduled burst</b>: the forecast does not anticipate it, and the burst finds cold containers.</li>
+<li>Try <b>idle traffic</b> with the predictive strategy: with no recent spikes the model stays quiet instead of warming on the clock alone.</li>
+<li>Each strategy was benchmarked once; the fixed baseline&rsquo;s interval and pool size are my own choices.</li>
+</ul>
+</main>
+
+<script>
+const MODEL = /*MODEL_JSON*/;
+// ==== ENGINE START
+const CFG = {spike:28,bg:3,period:5,wave:4,maxWarm:4,perContainer:6,threshold:12,fixedN:4,fixedEvery:3,holdS:1.5,initS:0.8,memGB:0.25,price:0.0000166667};
+function predict(row){let total=MODEL.init;for(const t of MODEL.trees){let i=0;while(t.left[i]!==-1){i=row[t.feature[i]]<=t.threshold[i]?t.left[i]:t.right[i];}total+=MODEL.lr*t.value[i];}return total;}
+function features(counts,m){
+  const g=k=>(k>=0&&counts[k]!==undefined)?counts[k]:0;
+  const f={};for(const k of [1,2,3,5,10,15])f['lag'+k]=g(m-(k-1));
+  f.roll5=(g(m)+g(m-1)+g(m-2)+g(m-3)+g(m-4))/5;
+  let mx=0;for(let k=m-14;k<=m;k++)mx=Math.max(mx,g(k));f.max15=mx;
+  f.diff1=g(m)-g(m-1);f.min_of_period=m%5;
+  return MODEL.features.map(n=>f[n]);
+}
+function trafficAt(t,mode,bursts){
+  let n=mode==='idle'?0:(mode==='scheduled'&&t%CFG.period===0?CFG.spike:CFG.bg);
+  if(bursts.has(t))n+=CFG.spike;return n;
+}
+function newSim(strategy,mode){return{strategy,mode,t:0,counts:[],pool:0,pings:0,newC:0,spikeReq:0,spikeCold:0,bgCold:0,forecasts:[],warmAt:[],coldAt:[],bursts:new Set(),last:''};}
+function stepSim(s){
+  const T=s.t,m=T-1;let forecast=null,warm=0;
+  if(s.strategy==='predictive'&&m>=0){
+    forecast=Math.max(0,predict(features(s.counts,m)));
+    if(forecast>=CFG.threshold)warm=Math.max(1,Math.min(CFG.maxWarm,Math.ceil(forecast/CFG.perContainer)));
+  }else if(s.strategy==='fixed'&&T%CFG.fixedEvery===0){warm=CFG.fixedN;}
+  if(warm>0){const before=s.pool;s.pool=Math.max(s.pool,warm);s.newC+=Math.max(0,warm-before);s.pings+=warm;}
+  if(forecast!==null)s.forecasts[T+1]=forecast;
+  s.warmAt[T]=warm;
+  const n=trafficAt(T,s.mode,s.bursts);s.counts[T]=n;
+  let cold=0;const isSpike=n>=20;
+  if(isSpike){cold=Math.max(0,CFG.wave-s.pool);s.pool=Math.max(s.pool,CFG.wave);s.spikeReq+=n;s.spikeCold+=cold;}
+  else if(n>0&&s.pool===0){s.bgCold++;s.pool=1;}
+  s.coldAt[T]=cold;
+  if(isSpike&&s.mode==='scheduled'&&T%CFG.period===0)s.pool=0; // benchmark re-publishes the function after each spike
+  s.last={T,forecast,warm,n,cold,isSpike};
+  s.t++;
+}
+function cost(pings,newC){return(pings*CFG.holdS+newC*CFG.initS)*CFG.memGB*CFG.price;}
+function runBenchmark(strategy){
+  const s=newSim(strategy,'scheduled');let spikeReq=0,cold=0,pings=0,newC=0;
+  for(let i=0;i<35;i++){
+    const T=s.t,pb=s.pings,nb=s.newC;stepSim(s);
+    if(T>=4&&T<=31){pings+=s.pings-pb;newC+=s.newC-nb;} // same window as the real benchmark's warm-up log
+    if(T>=5&&s.last.isSpike){spikeReq+=s.last.n;cold+=s.last.cold;}
+  }
+  return{cold,spikeReq,pings};
+}
+// ==== ENGINE END
+
+const REAL={off:{cold:17,pings:0,perCycle:[3,2,3,3,3,3]},fixed:{cold:0,pings:36,perCycle:[0,0,0,0,0,0]},predictive:{cold:0,pings:24,perCycle:[0,0,0,0,0,0]}};
+const NAMES={off:'No warming',fixed:'Fixed interval',predictive:'Predictive'};
+let sim=newSim('predictive','scheduled'),timer=null;
+const $=id=>document.getElementById(id);
+
+function draw(){
+  const c=$('chart'),dpr=window.devicePixelRatio||1,W=c.clientWidth,H=c.clientHeight;
+  c.width=W*dpr;c.height=H*dpr;const g=c.getContext('2d');g.setTransform(dpr,0,0,dpr,0,0);
+  const css=getComputedStyle(document.documentElement),col=n=>css.getPropertyValue(n).trim();
+  g.clearRect(0,0,W,H);g.font='12px system-ui,sans-serif';
+  const padL=34,padB=24,padT=22,padR=10,win=40,end=Math.max(sim.t,win-3),start=end-win;
+  const cw=(W-padL-padR)/win,x=m=>padL+(m-start+0.5)*cw,y=v=>padT+(H-padT-padB)*(1-Math.min(v,36)/36);
+  g.strokeStyle=col('--line');g.fillStyle=col('--muted');g.lineWidth=1;
+  for(const v of [0,10,20,30]){g.beginPath();g.moveTo(padL,y(v));g.lineTo(W-padR,y(v));g.stroke();g.textAlign='right';g.fillText(v,padL-6,y(v)+4);}
+  g.textAlign='center';
+  for(let m=start;m<end;m++){if(m>=0&&m%5===0)g.fillText(m,x(m),H-8);}
+  for(let m=Math.max(start,0);m<end;m++){
+    const n=sim.counts[m];if(n===undefined)continue;
+    g.fillStyle=n>=20?col('--spike'):col('--bar');const bw=cw*0.68;
+    g.fillRect(x(m)-bw/2,y(n),bw,y(0)-y(n));
+    if(sim.coldAt[m]>0){g.fillStyle=col('--spike');g.fillText(sim.coldAt[m]+' cold',x(m),y(n)-5);}
+  }
+  g.strokeStyle=col('--fc');g.fillStyle=col('--fc');g.lineWidth=2;g.beginPath();let first=true;
+  for(let m=start;m<end+1;m++){const f=sim.forecasts[m];if(f===undefined)continue;
+    if(first){g.moveTo(x(m),y(f));first=false;}else g.lineTo(x(m),y(f));}
+  g.stroke();
+  for(let m=start;m<end+1;m++){const f=sim.forecasts[m];if(f===undefined)continue;g.beginPath();g.arc(x(m),y(f),3,0,7);g.fill();}
+  g.fillStyle=col('--warm');
+  for(let m=start;m<end;m++){const w=sim.warmAt[m];if(!w)continue;
+    g.beginPath();g.moveTo(x(m),padT-14);g.lineTo(x(m)-6,padT-3);g.lineTo(x(m)+6,padT-3);g.fill();
+    g.textAlign='center';g.fillText('+'+w,x(m),padT+10);}
+}
+function status(){
+  const L=sim.last;if(!L){$('status').textContent='Press Play or Step to start. The predictor runs at the start of every simulated minute.';return;}
+  let msg='Minute '+L.T+': ';
+  if(sim.strategy==='predictive'){
+    msg+=L.forecast===null?'no history yet, so no forecast. ':'forecast for minute '+(L.T+1)+' is '+L.forecast.toFixed(1)+' requests, '+(L.warm?'above the threshold of '+CFG.threshold+', so '+L.warm+' containers are warmed now. ':'below the threshold of '+CFG.threshold+', so nothing is warmed. ');
+  }else if(sim.strategy==='fixed'){
+    msg+=L.warm?'scheduled warm-up: '+L.warm+' pings sent (every '+CFG.fixedEvery+' minutes, whether or not traffic is coming). ':'no scheduled warm-up this minute. ';
+  }else msg+='warming is off. ';
+  if(L.isSpike)msg+=L.n+' requests arrived: '+L.cold+' cold start'+(L.cold===1?'':'s')+'.';
+  else msg+=L.n+' requests arrived.';
+  $('status').textContent=msg;
+}
+function cards(){
+  $('sCold').textContent=sim.spikeCold;$('sReq').textContent=sim.spikeReq;$('sPings').textContent=sim.pings;
+  $('sCost').textContent='$'+cost(sim.pings,sim.newC).toFixed(6);
+}
+function render(){draw();status();cards();}
+function tick(){stepSim(sim);render();}
+function setPlaying(on){
+  if(timer){clearInterval(timer);timer=null;}
+  if(on)timer=setInterval(tick,+$('speed').value);
+  $('play').textContent=on?'Pause':'Play';
+}
+function reset(){setPlaying(false);sim=newSim(sim.strategy,$('mode').value);render();}
+$('play').onclick=()=>setPlaying(!timer);
+$('step').onclick=()=>{setPlaying(false);tick();};
+$('reset').onclick=reset;
+$('speed').onchange=()=>{if(timer)setPlaying(true);};
+$('mode').onchange=reset;
+$('burst').onclick=()=>{let t=sim.t;while(t%CFG.period===0)t++;sim.bursts.add(t);};
+document.querySelectorAll('#strategies button').forEach(b=>b.onclick=()=>{
+  document.querySelectorAll('#strategies button').forEach(x=>x.classList.remove('on'));b.classList.add('on');
+  sim=newSim(b.dataset.s,$('mode').value);setPlaying(false);render();});
+window.addEventListener('resize',draw);
+
+(function staticSections(){
+  const body=document.querySelector('#cmp tbody');
+  for(const s of ['off','fixed','predictive']){
+    const r=runBenchmark(s);
+    body.insertAdjacentHTML('beforeend','<tr><td>'+NAMES[s]+'</td><td>'+r.cold+' of '+r.spikeReq+'</td><td>'+REAL[s].cold+' of 168</td><td>'+r.pings+'</td><td>'+REAL[s].pings+'</td></tr>');
+  }
+  let h='';
+  for(const s of ['off','fixed','predictive']){
+    h+='<div class="bars"><div class="name">'+NAMES[s]+'</div>';
+    for(const v of REAL[s].perCycle)h+='<div><div class="b'+(v?'':' zero')+'" style="height:'+(v?v*14:4)+'px">'+(v||'')+'</div></div>';
+    h+='</div>';
+  }
+  $('cycleBars').innerHTML=h;
+})();
+window.__test={runBenchmark,newSim,stepSim,predict,features,CFG};
+render();
+</script>
+</body>
+</html>

@@ -1,5 +1,7 @@
 # Adaptive Cold-Start Predictor for AWS Lambda
 
+**Live demo (in-browser simulator and real benchmark results):** https://malewarpallavi.github.io/coldstart-predictor/
+
 A serverless system that forecasts load from per-minute invocation history and pre-warms
 Lambda containers just before a predicted spike, instead of keeping containers warm all the time.
 Built to learn AWS (Lambda, DynamoDB, EventBridge, CloudWatch, SAM) and to measure the
