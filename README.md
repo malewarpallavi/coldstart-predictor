@@ -9,6 +9,8 @@ latency vs. cost trade-off of three warming strategies.
 
 > An earlier Cloud Run / Java prototype of the same idea is kept under the git tag `gcp-prototype`.
 
+> **Status:** the AWS stack has been deleted to avoid ongoing cost. The final version is tagged `v1.0` and redeploys in a few minutes (see [Run it](#run-it)). The live demo page above does not need AWS.
+
 ## Architecture
 
 ```mermaid
@@ -91,9 +93,18 @@ re-published, so every spike starts with no warm containers unless the strategy 
 - The first version of the model warmed containers on a completely idle system, because the simulated spikes
   never stopped and it learned the clock. Adding on/off blocks to the training data fixed it.
 
+## Live demo page
+
+`docs/index.html` is a single self-contained page, published with GitHub Pages. It runs the exported model
+(`predictor/model.json`) in the browser against the same workload as the benchmark and models container
+warm/cold state, so you can compare the three strategies, switch to idle traffic, or inject an unscheduled burst.
+It is a simulation, not a live AWS call. For the benchmark's counting window it reproduces the real AWS ping
+counts (36 fixed, 24 predictive) and lands within one cold start of the real result for no warming (18 vs 17).
+If you retrain the model, regenerate the page with `python docs/build.py`.
+
 ## Run it
 
-Requirements: AWS account, AWS CLI, SAM CLI, Python 3.12.
+Requirements: AWS account, AWS CLI, SAM CLI, Python 3.12. To redeploy the final version: `git checkout v1.0`.
 
 ```bash
 sam build && sam deploy --guided          # stack name: coldstart-predictor, region: ap-south-1
@@ -119,5 +130,13 @@ service/        target Lambda
 predictor/      predictor Lambda + exported model.json
 notebooks/      forecasting experiment and model export
 loadtest/       benchmark runner, summary script, results
+docs/           GitHub Pages demo (index.html, build.py)
 template.yaml   SAM template (Lambda x2, DynamoDB, EventBridge)
 ```
+
+## Possible next steps
+
+- Rerun the benchmark from inside the region (for example AWS CloudShell) to remove client-side network noise and compare p95 fairly.
+- Train and test on real or less regular traffic, including unscheduled bursts that this model does not anticipate.
+- Evaluate provisioned concurrency as a fourth strategy once the account concurrency quota allows it.
+- Replace the static results page with a live dashboard that reads the DynamoDB counters.
